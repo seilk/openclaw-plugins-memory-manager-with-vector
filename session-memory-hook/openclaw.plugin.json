@@ -1,0 +1,21 @@
+{
+  "id": "session-memory-hook",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true
+      },
+      "maxMessages": {
+        "type": "number",
+        "default": 50
+      },
+      "minMessages": {
+        "type": "number",
+        "default": 1
+      }
+    }
+  }
+}

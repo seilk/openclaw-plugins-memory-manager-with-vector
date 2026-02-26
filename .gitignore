@@ -1,0 +1,7 @@
+node_modules/
+*.vec
+*.sqlite
+.env
+.env.*
+*.log
+.DS_Store
