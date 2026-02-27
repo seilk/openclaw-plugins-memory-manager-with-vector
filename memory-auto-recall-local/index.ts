@@ -63,6 +63,13 @@ interface PluginApi {
     handler: (event: unknown, ctx?: unknown) => Promise<unknown>,
     opts?: { priority?: number }
   ) => void;
+  registerCommand?: (command: {
+    name: string;
+    description: string;
+    acceptsArgs?: boolean;
+    requireAuth?: boolean;
+    handler: (ctx: Record<string, unknown>) => { text: string } | Promise<{ text: string }>;
+  }) => void;
 }
 
 interface ScoredBlock {
@@ -119,6 +126,40 @@ function parseConfig(raw: unknown): PluginConfig {
     embeddingModel: typeof c.embeddingModel === "string" ? c.embeddingModel : DEFAULTS.embeddingModel,
     embeddingProvider: typeof c.embeddingProvider === "string" ? c.embeddingProvider : DEFAULTS.embeddingProvider,
   };
+}
+
+// ---------------------------------------------------------------------------
+// /memoff /memon toggle state (in-memory, resets on gateway restart)
+// ---------------------------------------------------------------------------
+
+/**
+ * Tracks scopes where memory injection is disabled.
+ * Keyed by normalized scope string (e.g. "discord:channel:123" or "dm").
+ * Shared across all agents — /memoff in a channel disables for ALL agents.
+ * Bounded by active channel/DM count (typically O(tens)).
+ */
+const disabledScopes = new Set<string>();
+
+/**
+ * Normalize ctx.from (from registerCommand) to a scope key.
+ * - "discord:channel:123" or "discord:group:123" → kept as-is
+ * - "discord:userId" (DM) → "dm"
+ */
+function fromToScopeKey(from: string): string {
+  if (from.includes(":channel:") || from.includes(":group:")) return from;
+  return "dm";
+}
+
+/**
+ * Normalize sessionKey (from before_prompt_build / command:new) to a scope key.
+ * - "agent:capybara:discord:channel:123" → "discord:channel:123"
+ * - "agent:capybara:main" → "dm"
+ */
+function sessionKeyToScopeKey(sessionKey: string): string {
+  const m = sessionKey.match(/^agent:[^:]+:(.+)$/);
+  const suffix = m ? m[1] : null;
+  if (suffix && (suffix.includes(":channel:") || suffix.includes(":group:"))) return suffix;
+  return "dm";
 }
 
 // ---------------------------------------------------------------------------
@@ -581,6 +622,13 @@ export function register(api: PluginApi): void {
         typeof ev?.sessionKey === "string" ? ev.sessionKey : "";
       if (!sessionKey) return;
 
+      // /memoff toggle check — early exit before any I/O or network calls
+      const scopeKey = sessionKeyToScopeKey(sessionKey);
+      if (disabledScopes.has(scopeKey)) {
+        api.logger.debug(`[memory-auto-recall-local] Skipped — disabled via /memoff for scope ${scopeKey}`);
+        return;
+      }
+
       const agentId = parseAgentId(sessionKey);
       if (!agentId) return;
 
@@ -610,9 +658,11 @@ export function register(api: PluginApi): void {
         const block = formatMemoriesBlock(results, cfg);
         if (!block) return;
 
+        // Debug: log which files/scores were selected
+        const debugInfo = results.map(r => `${r.file}(${Math.round(r.score * 100)}%)`).join(", ");
         api.logger.info(
           `[memory-auto-recall-local] Injecting ${results.length} memories via ${method} ` +
-          `(${block.length} chars) agent=${agentId} scope=${scopeDir}`
+          `(${block.length} chars) agent=${agentId} scope=${scopeDir} [${debugInfo}]`
         );
 
         return { prependContext: block };
@@ -623,6 +673,75 @@ export function register(api: PluginApi): void {
       }
     },
     { priority: 50 },
+  );
+
+  // ---------------------------------------------------------------------------
+  // /memoff /memon commands
+  // ---------------------------------------------------------------------------
+
+  if (typeof api.registerCommand === "function") {
+    api.registerCommand({
+      name: "memoff",
+      description: "Disable memory injection for this session",
+      requireAuth: true,
+      handler: (ctx) => {
+        const from = ctx.from as string | undefined;
+        if (!from) return { text: "⚠️ Cannot determine scope — memory toggle unavailable" };
+        const key = fromToScopeKey(from);
+        const wasAlreadyOff = disabledScopes.has(key);
+        disabledScopes.add(key);
+        api.logger.info(`[memory-auto-recall-local] /memoff — disabled for scope ${key}`);
+        return {
+          text: wasAlreadyOff
+            ? "🔇 Memory injection is already OFF for this session"
+            : "🔇 Memory injection OFF for this session",
+        };
+      },
+    });
+
+    api.registerCommand({
+      name: "memon",
+      description: "Re-enable memory injection for this session",
+      requireAuth: true,
+      handler: (ctx) => {
+        const from = ctx.from as string | undefined;
+        if (!from) return { text: "⚠️ Cannot determine scope — memory toggle unavailable" };
+        const key = fromToScopeKey(from);
+        const wasOff = disabledScopes.delete(key);
+        api.logger.info(`[memory-auto-recall-local] /memon — enabled for scope ${key}`);
+        return {
+          text: wasOff
+            ? "🔊 Memory injection ON for this session"
+            : "🔊 Memory injection is already ON for this session",
+        };
+      },
+    });
+
+    api.logger.info("[memory-auto-recall-local] Registered /memoff and /memon commands");
+  } else {
+    api.logger.warn("[memory-auto-recall-local] registerCommand unavailable — /memoff /memon not registered");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Clear toggle on /new and /reset (session boundary → default ON)
+  // ---------------------------------------------------------------------------
+
+  api.registerHook(
+    ["command:new", "command:reset"],
+    async (event: unknown) => {
+      const ev = event as Record<string, unknown>;
+      const sessionKey = typeof ev.sessionKey === "string" ? ev.sessionKey : "";
+      if (!sessionKey) return;
+
+      const key = sessionKeyToScopeKey(sessionKey);
+      if (disabledScopes.delete(key)) {
+        api.logger.info(`[memory-auto-recall-local] Toggle cleared on session reset for scope ${key}`);
+      }
+    },
+    {
+      name: "memory-auto-recall-local:reset-toggle",
+      description: "Clears /memoff toggle when session is reset via /new or /reset",
+    },
   );
 
   api.logger.info(
