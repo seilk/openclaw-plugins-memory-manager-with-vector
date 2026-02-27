@@ -30,7 +30,7 @@ Automatically injects relevant memory snippets into agent context before each pr
 | `maxCharsPerSnippet` | 600 | Max characters per snippet |
 | `minPromptLength` | 10 | Skip search for short prompts |
 | `embeddingModel` | `text-embedding-3-small` | Embedding model name |
-| `embeddingProvider` | `letsur` | Provider key from `openclaw.json` |
+| `embeddingProvider` | `YOUR_EMBEDDING_PROVIDER` | Provider key from `openclaw.json` |
 
 Also includes `embed-all.ts` — a batch script to generate `.vec` sidecar files for all existing `.md` memory files.
 
@@ -89,8 +89,8 @@ cp -r session-memory-hook       ~/.openclaw/extensions/
 {
   "models": {
     "providers": {
-      "letsur": {
-        "apiKey": "your-api-key",
+      "YOUR_EMBEDDING_PROVIDER": {
+        "apiKey": "YOUR_API_KEY_FOR_EMBEDDING",
         "baseUrl": "https://api.letsur.ai/v1"
       }
     }
@@ -107,7 +107,7 @@ npx tsx memory-auto-recall-local/embed-all.ts
 ## Requirements
 
 - OpenClaw with plugin support
-- An OpenAI-compatible embedding API (default: Letsur with `text-embedding-3-small`)
+- An OpenAI-compatible embedding API (example shown with `text-embedding-3-small`)
 - Node.js 18+
 
 ## License
