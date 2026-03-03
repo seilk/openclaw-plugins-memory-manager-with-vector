@@ -875,7 +875,7 @@ async function generateVecSidecar(
     if (!mdPath.endsWith(".md")) return;
 
     // Read embedding config from openclaw.json
-    const embCfg = resolveEmbeddingConfig(cfg, "letsur");
+    const embCfg = resolveEmbeddingConfig(cfg, dwConfig?.embeddingProvider ?? "openai");
     if (!embCfg) {
       logger.debug("[memory-session-archive] No embedding provider config, skipping .vec generation");
       return;
@@ -1363,7 +1363,7 @@ function recordSessionToMemory(
   const dwConfig = opts?.pluginConfig?.documentWriter;
   const dwEnabled = dwConfig?.enabled !== false;
   const dwAgent = typeof dwConfig?.agent === "string" ? dwConfig.agent : "memory-writer";
-  const dwModel = typeof dwConfig?.model === "string" ? dwConfig.model : "letsur/gemini-3-flash-preview";
+  const dwModel = typeof dwConfig?.model === "string" ? dwConfig.model : "google/gemini-2.0-flash";
   const dwDirRaw = typeof dwConfig?.dir === "string" ? dwConfig.dir : api.runtime.state.resolveStateDir();
   const dwDir = dwDirRaw.startsWith("~") ? path.join(os.homedir(), dwDirRaw.slice(1)) : dwDirRaw;
 

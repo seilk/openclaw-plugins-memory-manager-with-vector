@@ -44,7 +44,7 @@
       },
       "embeddingProvider": {
         "type": "string",
-        "default": "letsur",
+        "default": "openai",
         "description": "Provider name from openclaw.json models.providers to use for embeddings"
       },
       "minEmbeddingScore": {

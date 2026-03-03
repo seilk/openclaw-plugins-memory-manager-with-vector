@@ -10,7 +10,7 @@
  *   npx tsx embed-all.ts
  *
  * Run from the extensions/memory-context-injector/ directory (or anywhere,
- * it always reads config from ~/.openclaw.discord/openclaw.json).
+ * it always reads config from ~/.openclaw/openclaw.json or $OPENCLAW_STATE_DIR).
  */
 
 import * as fs from "node:fs";
@@ -21,10 +21,11 @@ import * as os from "node:os";
 // Config
 // ---------------------------------------------------------------------------
 
-const OPENCLAW_CONFIG_PATH = path.join(os.homedir(), ".openclaw.discord", "openclaw.json");
+const STATE_DIR = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");
+const OPENCLAW_CONFIG_PATH = path.join(STATE_DIR, "openclaw.json");
 
 const EMBEDDING_MODEL = "text-embedding-3-small";
-const EMBEDDING_PROVIDER = "letsur";
+const EMBEDDING_PROVIDER = "openai";
 const MAX_BATCH_SIZE = 20; // texts per API call
 const RATE_LIMIT_DELAY_MS = 200; // delay between API calls
 const MAX_BLOCK_CHARS = 6000; // sub-split blocks exceeding this (~2K tokens safety margin under 8191)

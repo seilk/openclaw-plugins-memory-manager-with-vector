@@ -111,7 +111,7 @@ const DEFAULTS: PluginConfig = {
   maxCharsPerSnippet: 600,
   maxTotalChars: 2500,
   embeddingModel: "text-embedding-3-small",
-  embeddingProvider: "letsur",
+  embeddingProvider: "openai",
 };
 
 function parseConfig(raw: unknown): PluginConfig {

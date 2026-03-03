@@ -45,7 +45,7 @@ const AGENT_FILTER = flags.agent as string | undefined;
 // Config
 // ---------------------------------------------------------------------------
 
-const STATE_DIR = path.join(os.homedir(), ".openclaw.discord");
+const STATE_DIR = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");
 const CONFIG_PATH = path.join(STATE_DIR, "extensions", "memory-session-archive", "config.json");
 
 interface BackfillConfig {
@@ -57,7 +57,7 @@ interface BackfillConfig {
 function loadConfig(): BackfillConfig {
   const defaults: BackfillConfig = {
     agent: "memory-writer-backfill",
-    model: "letsur/gemini-3-flash-preview",
+    model: "google/gemini-2.0-flash",
     dir: path.join(STATE_DIR, ".memory-writer"),
   };
 

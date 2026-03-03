@@ -40,7 +40,7 @@ Automatically injects relevant memory snippets into agent context before each pr
 | `maxCharsPerSnippet` | 600 | Max characters per snippet |
 | `minPromptLength` | 10 | Skip search for short prompts |
 | `embeddingModel` | `text-embedding-3-small` | Embedding model name |
-| `embeddingProvider` | `letsur` | Provider key from `openclaw.json` |
+| `embeddingProvider` | `openai` | Provider key from `openclaw.json` |
 
 Also includes `embed-all.ts` — a batch script to generate `.vec` sidecar files for all existing `.md` memory files. Supports `--limit N` for small-scale testing.
 
