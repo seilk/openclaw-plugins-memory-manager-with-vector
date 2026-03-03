@@ -1,9 +1,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { spawn } from "node:child_process";
 
 /**
- * session-memory-hook
+ * memory-session-archive
  *
  * Memory path policy (standardized):
  * - DM session logs:      workspace-{agent}/memory/dm/YYYY-MM-DD-HHMMSS.md
@@ -59,7 +60,16 @@ interface PluginApi {
   id: string;
   name: string;
   config: any;
-  pluginConfig: { enabled?: boolean; maxMessages?: number; minMessages?: number };
+  pluginConfig: {
+    enabled?: boolean;
+    maxMessages?: number;
+    minMessages?: number;
+    documentWriter?: {
+      enabled?: boolean;
+      agent?: string;
+      model?: string;
+    };
+  };
   runtime: {
     config: { loadConfig: () => any };
     state: { resolveStateDir: () => string };
@@ -73,7 +83,7 @@ interface PluginApi {
   registerHook: (
     events: string | string[],
     handler: (event: HookEvent) => Promise<void>,
-    opts?: { name?: string; description?: string; priority?: number }
+    opts?: { name?: string; description?: string; priority?: number },
   ) => void;
 }
 
@@ -93,7 +103,7 @@ function formatKstDateTime(date: Date): string {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-    hour12: false
+    hour12: false,
   });
   const parts = Object.fromEntries(fmt.formatToParts(date).map((p) => [p.type, p.value]));
   return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} KST`;
@@ -108,7 +118,7 @@ function formatKstFileTimestamp(date: Date): string {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-    hour12: false
+    hour12: false,
   });
   const parts = Object.fromEntries(fmt.formatToParts(date).map((p) => [p.type, p.value]));
   return `${parts.year}-${parts.month}-${parts.day}-${parts.hour}${parts.minute}${parts.second}`;
@@ -191,7 +201,7 @@ function buildSessionEntryFromIndexRecord(raw: any, sessionsDir: string): Sessio
     ...raw,
     sessionFile,
     sessionId: raw.sessionId,
-    groupId: raw.groupId
+    groupId: raw.groupId,
   } as SessionEntry;
 }
 
@@ -242,7 +252,7 @@ function parseResetSuffixToEpochMs(suffix: string): number | null {
 function resolveResetVariantForSessionEntry(
   cfg: any,
   agentId: string,
-  entry?: SessionEntry | null
+  entry?: SessionEntry | null,
 ): SessionEntry | null {
   const baseSessionId = typeof entry?.sessionId === "string" ? entry.sessionId : "";
   if (!baseSessionId || baseSessionId.includes(".reset.")) return null;
@@ -293,7 +303,7 @@ function resolveResetVariantForSessionEntry(
     transcriptPath: picked.name,
     updatedAt: picked.updatedAt,
     resetOfSessionId: baseSessionId,
-    isResetTranscript: true
+    isResetTranscript: true,
   };
 }
 
@@ -301,7 +311,7 @@ function findResetTranscriptNear(
   cfg: any,
   agentId: string,
   around: Date,
-  opts?: { windowMs?: number; excludeSessionId?: string }
+  opts?: { windowMs?: number; excludeSessionId?: string },
 ): SessionEntry | null {
   const sessionsDir = resolveAgentSessionsDir(cfg, agentId);
   if (!sessionsDir) return null;
@@ -350,7 +360,7 @@ function findResetTranscriptNear(
       transcriptPath: name,
       updatedAt,
       resetOfSessionId: baseSessionId,
-      isResetTranscript: true
+      isResetTranscript: true,
     };
 
     if (!best || delta < best.delta) best = { entry, delta };
@@ -362,8 +372,8 @@ function findResetTranscriptNear(
 function listResetSessionRecords(
   sessionsDir: string,
   agentId: string,
-  indexed: IndexedSessionRecord[]
-): IndexedSessionRecord[] { 
+  indexed: IndexedSessionRecord[],
+): IndexedSessionRecord[] {
   let files: string[] = [];
   try {
     files = fs.readdirSync(sessionsDir);
@@ -414,7 +424,7 @@ function listResetSessionRecords(
       transcriptPath: name,
       updatedAt,
       resetOfSessionId: baseSessionId,
-      isResetTranscript: true
+      isResetTranscript: true,
     };
 
     out.push({ key, entry });
@@ -423,7 +433,11 @@ function listResetSessionRecords(
   return out;
 }
 
-function listIndexedSessionRecordsWithResetFiles(parsed: any, sessionsDir: string, agentId: string): IndexedSessionRecord[] {
+function listIndexedSessionRecordsWithResetFiles(
+  parsed: any,
+  sessionsDir: string,
+  agentId: string,
+): IndexedSessionRecord[] {
   const indexed = listIndexedSessionRecords(parsed, sessionsDir);
   const resetIndexed = listResetSessionRecords(sessionsDir, agentId, indexed);
   return [...indexed, ...resetIndexed];
@@ -437,7 +451,11 @@ function isLikelySystemSessionKey(key: string): boolean {
   return isLikelyCronSessionKey(key) || key.includes(":heartbeat");
 }
 
-function resolveSessionEntryByKey(cfg: any, agentId: string, sessionKey: string): SessionEntry | null {
+function resolveSessionEntryByKey(
+  cfg: any,
+  agentId: string,
+  sessionKey: string,
+): SessionEntry | null {
   const sessionsDir = resolveAgentSessionsDir(cfg, agentId);
   if (!sessionsDir) return null;
 
@@ -460,7 +478,7 @@ function resolvePreviousSessionFallback(
   currentSessionId?: string,
   currentSessionKey?: string,
   currentSessionEntry?: SessionEntry,
-  senderId?: string | number
+  senderId?: string | number,
 ): SessionEntry | null {
   const sessionsDir = resolveAgentSessionsDir(cfg, agentId);
   if (!sessionsDir) return null;
@@ -511,7 +529,9 @@ function resolvePreviousSessionFallback(
       }
 
       // 2) If metadata is missing, prefer the newest reset transcript.
-      const resetDm = dmCandidates.find((r) => (r.entry as any).isResetTranscript && !isLikelySystemSessionKey(r.key));
+      const resetDm = dmCandidates.find(
+        (r) => (r.entry as any).isResetTranscript && !isLikelySystemSessionKey(r.key),
+      );
       if (resetDm) return resetDm.entry;
 
       // 3) Final fallback: newest non-system direct transcript.
@@ -562,7 +582,7 @@ function getSessionStartDate(entry: SessionEntry, transcript: TranscriptLine[]):
     (entry as any).startedAt,
     (entry as any).startAt,
     (entry as any).startTime,
-    (entry as any).timestamp
+    (entry as any).timestamp,
   ];
 
   for (const c of entryCandidates) {
@@ -610,7 +630,7 @@ function isLikelySlashCommandText(text: string): boolean {
 
 function extractMessages(
   transcript: TranscriptLine[],
-  maxMessages: number
+  maxMessages: number,
 ): Array<{ role: string; text: string; timestamp?: number }> {
   const messages: Array<{ role: string; text: string; timestamp?: number }> = [];
 
@@ -672,8 +692,28 @@ function extractSlug(messages: Array<{ role: string; text: string; timestamp?: n
     .filter((t) => !/^\d+$/.test(t));
 
   const stop = new Set([
-    "the", "and", "for", "with", "that", "this", "from", "have", "need", "just",
-    "은", "는", "이", "가", "을", "를", "에", "의", "좀", "그냥", "지금", "그리고"
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "have",
+    "need",
+    "just",
+    "은",
+    "는",
+    "이",
+    "가",
+    "을",
+    "를",
+    "에",
+    "의",
+    "좀",
+    "그냥",
+    "지금",
+    "그리고",
   ]);
 
   const freq = new Map<string, number>();
@@ -715,9 +755,8 @@ function appendToFile(filePath: string, content: string): void {
 const VEC_MAX_BLOCK_CHARS = 6000;
 
 interface VecBlock {
-  text: string;
-  embedding: number[];
   fullText: string;
+  embedding: number[];
 }
 
 interface VecFile {
@@ -749,11 +788,25 @@ function subSplitBlock(text: string, maxChars: number): string[] {
     remaining = remaining.slice(splitIdx).trim();
   }
 
-  return chunks.filter(c => c.length > 20);
+  return chunks.filter((c) => c.length > 20);
 }
 
 function splitMdIntoBlocks(raw: string): string[] {
-  const rawBlocks = raw.split(/\n(?=---\n|## )/).filter(b => b.trim().length > 20);
+  const blockTagMatches = raw.match(/<block[^>]*>([\s\S]*?)<\/block>/g);
+  let rawBlocks: string[];
+
+  if (blockTagMatches && blockTagMatches.length > 0) {
+    rawBlocks = blockTagMatches
+      .map((b) => {
+        const titleMatch = b.match(/<block\s+title="([^"]*)">/);
+        const body = b.replace(/<\/?block[^>]*>/g, "").trim();
+        return titleMatch ? `${titleMatch[1]}: ${body}` : body;
+      })
+      .filter((b) => b.length > 20);
+  } else {
+    rawBlocks = raw.split(/\n(?=---\n|## )/).filter((b) => b.trim().length > 20);
+  }
+
   const result: string[] = [];
   for (const block of rawBlocks) {
     const subs = subSplitBlock(block.trim(), VEC_MAX_BLOCK_CHARS);
@@ -795,7 +848,7 @@ async function embedBatch(
     const response = await fetch(`${baseUrl}/embeddings`, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ model, input: texts }),
@@ -805,9 +858,9 @@ async function embedBatch(
 
     if (!response.ok) return null;
 
-    const json = await response.json() as { data: Array<{ embedding: number[]; index: number }> };
+    const json = (await response.json()) as { data: Array<{ embedding: number[]; index: number }> };
     const sorted = [...json.data].sort((a, b) => a.index - b.index);
-    return sorted.map(d => d.embedding);
+    return sorted.map((d) => d.embedding);
   } catch {
     return null;
   }
@@ -824,7 +877,7 @@ async function generateVecSidecar(
     // Read embedding config from openclaw.json
     const embCfg = resolveEmbeddingConfig(cfg, "letsur");
     if (!embCfg) {
-      logger.debug("[session-memory-hook] No embedding provider config, skipping .vec generation");
+      logger.debug("[memory-session-archive] No embedding provider config, skipping .vec generation");
       return;
     }
 
@@ -833,7 +886,7 @@ async function generateVecSidecar(
     const blocks = splitMdIntoBlocks(raw);
 
     if (blocks.length === 0) {
-      logger.debug(`[session-memory-hook] No blocks in ${path.basename(mdPath)}, skipping .vec`);
+      logger.debug(`[memory-session-archive] No blocks in ${path.basename(mdPath)}, skipping .vec`);
       return;
     }
 
@@ -843,7 +896,9 @@ async function generateVecSidecar(
       const batch = blocks.slice(i, i + 20);
       const embeddings = await embedBatch(batch, embCfg.baseUrl, embCfg.apiKey, model);
       if (!embeddings) {
-        logger.warn(`[session-memory-hook] Embedding batch failed for ${path.basename(mdPath)}, skipping .vec`);
+        logger.warn(
+          `[memory-session-archive] Embedding batch failed for ${path.basename(mdPath)}, skipping .vec`,
+        );
         return;
       }
       allEmbeddings.push(...embeddings);
@@ -851,18 +906,103 @@ async function generateVecSidecar(
 
     const vecData: VecFile = {
       model,
-      blocks: blocks.map((text, idx) => ({
-        text: text.slice(0, 200),
+      blocks: blocks.map((fullText, idx) => ({
+        fullText,
         embedding: allEmbeddings[idx],
-        fullText: text,
       })),
     };
 
     const vecPath = mdPath.replace(/\.md$/, ".vec");
-    fs.writeFileSync(vecPath, JSON.stringify(vecData), "utf-8");
-    logger.info(`[session-memory-hook] Generated .vec sidecar: ${path.basename(vecPath)} (${blocks.length} blocks)`);
+    fs.writeFileSync(vecPath, JSON.stringify(vecData, null, 2), "utf-8");
+    logger.info(
+      `[memory-session-archive] Generated .vec sidecar: ${path.basename(vecPath)} (${blocks.length} blocks)`,
+    );
   } catch (err) {
-    logger.warn(`[session-memory-hook] .vec generation failed for ${path.basename(mdPath)}: ${err instanceof Error ? err.message : String(err)}`);
+    logger.warn(
+      `[memory-session-archive] .vec generation failed for ${path.basename(mdPath)}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Memory-Writer Pipeline (v2)
+// ---------------------------------------------------------------------------
+
+function writeCleanTranscript(
+  messages: Array<{ role: string; text: string; timestamp?: number }>,
+  targetMdPath: string,
+): string {
+  // Write to /tmp/ to avoid OpenCode's <system-reminder> AGENTS.md injection
+  // that occurs when the Read tool reads files near a workspace AGENTS.md.
+  const basename = path.basename(targetMdPath, ".md");
+  const tmpPath = path.join(os.tmpdir(), `memory-writer-${basename}-${Date.now()}.transcript.tmp`);
+  const lines = messages.map((m) => `[${m.role}]\n${m.text}`);
+  fs.writeFileSync(tmpPath, lines.join("\n\n---\n\n"), "utf-8");
+  return tmpPath;
+}
+
+function spawnDocumentWriter(
+  transcriptPath: string,
+  targetMdPath: string,
+  dwConfig: { agent: string; model: string },
+  stateDir: string,
+  logger: PluginApi["logger"],
+  cfg: any,
+): void {
+  const args = [
+    "run",
+    `Write the output to: ${targetMdPath}`,
+    "--file", transcriptPath,
+    "--agent", dwConfig.agent,
+    "--model", dwConfig.model,
+    "--dir", stateDir,
+  ];
+
+  logger.info(
+    `[memory-session-archive] Spawning memory-writer: agent=${dwConfig.agent} ` +
+    `model=${dwConfig.model} transcript=${path.basename(transcriptPath)} → ${path.basename(targetMdPath)}`,
+  );
+
+  try {
+    const child = spawn("opencode", args, {
+      stdio: "ignore",
+      detached: true,
+    });
+
+    const cleanupTranscript = () => {
+      try { fs.unlinkSync(transcriptPath); } catch {}
+    };
+
+    child.on("close", (code) => {
+      cleanupTranscript();
+      if (code === 0 && fs.existsSync(targetMdPath)) {
+        logger.info(
+          `[memory-session-archive] memory-writer completed: ${path.basename(targetMdPath)}`,
+        );
+        generateVecSidecar(targetMdPath, logger, cfg).catch(() => {});
+      } else if (code === 0) {
+        logger.warn(
+          `[memory-session-archive] memory-writer exited 0 but file missing: ${path.basename(targetMdPath)}`,
+        );
+      } else {
+        logger.warn(
+          `[memory-session-archive] memory-writer exited with code ${code}: ${path.basename(targetMdPath)}`,
+        );
+      }
+    });
+
+    child.on("error", (err) => {
+      cleanupTranscript();
+      logger.warn(
+        `[memory-session-archive] memory-writer spawn error: ${err.message}`,
+      );
+    });
+
+    child.unref();
+  } catch (err) {
+    logger.warn(
+      `[memory-session-archive] Failed to spawn memory-writer: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 }
 
@@ -911,7 +1051,7 @@ function buildStandardEntry(params: {
     "actions:",
     recent || "- (none)",
     "tags: []",
-    ""
+    "",
   ].join("\n");
 }
 
@@ -922,24 +1062,39 @@ function resolveTargets(params: {
   sessionStart: Date;
   writeLongTerm: boolean;
   channel?: string;
+  threadPath?: { parentGroupId: string; threadGroupId: string };
 }): { sessionLogFile: string; longTermFile?: string } {
-  const { workspaceDir, source, groupId, sessionStart, writeLongTerm, channel } = params;
+  const { workspaceDir, source, groupId, sessionStart, writeLongTerm, channel, threadPath } = params;
   const sessionFileName = `${formatKstFileTimestamp(sessionStart)}.md`;
 
   if (source === "group") {
-    const gid = groupId ?? "unknown";
     const prefix = "dc"; // discord-only deployment
+
+    if (threadPath) {
+      const base = path.join(
+        workspaceDir,
+        "memory",
+        `${prefix}_${threadPath.parentGroupId}`,
+        threadPath.threadGroupId,
+      );
+      return {
+        sessionLogFile: path.join(base, sessionFileName),
+        longTermFile: writeLongTerm ? path.join(base, "MEMORY.md") : undefined,
+      };
+    }
+
+    const gid = groupId ?? "unknown";
     const base = path.join(workspaceDir, "memory", `${prefix}_${gid}`);
     return {
       sessionLogFile: path.join(base, sessionFileName),
-      longTermFile: writeLongTerm ? path.join(base, "MEMORY.md") : undefined
+      longTermFile: writeLongTerm ? path.join(base, "MEMORY.md") : undefined,
     };
   }
 
   const base = path.join(workspaceDir, "memory", "dm");
   return {
     sessionLogFile: path.join(base, sessionFileName),
-    longTermFile: writeLongTerm ? path.join(base, "MEMORY.md") : undefined
+    longTermFile: writeLongTerm ? path.join(base, "MEMORY.md") : undefined,
   };
 }
 
@@ -964,7 +1119,7 @@ function resolveChatId(entry: SessionEntry, fallbackChatId?: string | number): s
     (entry as any).origin?.from,
     (entry as any).origin?.to,
     (entry as any).deliveryContext?.to,
-    (entry as any).lastTo
+    (entry as any).lastTo,
   ];
 
   for (const c of candidates) {
@@ -973,6 +1128,152 @@ function resolveChatId(entry: SessionEntry, fallbackChatId?: string | number): s
   }
 
   return "unknown";
+}
+
+function parseSessionIdFromPath(sessionPath?: string): string | null {
+  if (!sessionPath) return null;
+  const base = path.basename(sessionPath);
+  if (!base.endsWith(".jsonl")) return null;
+  return base.slice(0, -".jsonl".length) || null;
+}
+
+function resolveParentGroupIdFromThreadEntry(
+  cfg: any,
+  agentId: string,
+  entry: SessionEntry,
+): string | null {
+  const sessionsDir = resolveAgentSessionsDir(cfg, agentId);
+  if (!sessionsDir) {
+    console.error(`[memory-session-archive:debug] sessionsDir=null for agent=${agentId}`);
+    return null;
+  }
+
+  const sessionFile = ensureSessionFile(entry, cfg, agentId).sessionFile;
+  if (!sessionFile || !fs.existsSync(sessionFile)) {
+    console.error(`[memory-session-archive:debug] sessionFile missing: ${sessionFile}`);
+    return null;
+  }
+
+  let headerLine = "";
+  try {
+    headerLine = fs.readFileSync(sessionFile, "utf-8").split("\n", 1)[0] ?? "";
+  } catch {
+    return null;
+  }
+  if (!headerLine) return null;
+
+  let headerJson: any = null;
+  try {
+    headerJson = JSON.parse(headerLine);
+  } catch {
+    return null;
+  }
+
+  let parentSessionId = parseSessionIdFromPath(
+    typeof headerJson?.parentSession === "string" ? headerJson.parentSession : undefined,
+  );
+
+  // Fallback: if current session file has no parentSession (e.g. after /new reset),
+  // scan archived .reset files for the same thread ID to find parentSession.
+  if (!parentSessionId && sessionsDir) {
+    const threadId = (entry as any)?.origin?.threadId ?? (entry as any)?.deliveryContext?.threadId ?? (entry as any)?.lastThreadId;
+    const threadIdStr = threadId != null ? String(threadId) : null;
+    if (threadIdStr) {
+      try {
+        const allFiles = fs.readdirSync(sessionsDir);
+        const resetFiles = allFiles
+          .filter((f) => f.includes(threadIdStr) && f.includes(".reset."))
+          .sort()
+          .reverse(); // most recent first
+
+        for (const rf of resetFiles) {
+          try {
+            const rfPath = path.join(sessionsDir, rf);
+            const rfHeader = fs.readFileSync(rfPath, "utf-8").split("\n", 1)[0] ?? "";
+            const rfJson = JSON.parse(rfHeader);
+            const candidate = parseSessionIdFromPath(
+              typeof rfJson?.parentSession === "string" ? rfJson.parentSession : undefined,
+            );
+            if (candidate) {
+              parentSessionId = candidate;
+              break;
+            }
+          } catch {
+            continue;
+          }
+        }
+      } catch {
+        // ignore readdir errors
+      }
+    }
+  }
+
+  if (!parentSessionId) {
+    console.error(`[memory-session-archive:debug] parentSessionId=null after header+reset scan, threadId=${(entry as any)?.origin?.threadId}`);
+    return null;
+  }
+
+  console.error(`[memory-session-archive:debug] parentSessionId=${parentSessionId}`);
+  const sessionsIndex = path.join(sessionsDir, "sessions.json");
+  if (!fs.existsSync(sessionsIndex)) return null;
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(sessionsIndex, "utf-8"));
+    const indexed = listIndexedSessionRecordsWithResetFiles(parsed, sessionsDir, agentId);
+
+    for (const rec of indexed) {
+      if ((rec.entry?.sessionId ?? "") !== parentSessionId) continue;
+
+      const originThreadId = (rec.entry as any)?.origin?.threadId;
+      const deliveryThreadId = (rec.entry as any)?.deliveryContext?.threadId;
+      const threadId =
+        originThreadId != null
+          ? String(originThreadId)
+          : deliveryThreadId != null
+            ? String(deliveryThreadId)
+            : null;
+
+      // Parent/main session should be non-thread
+      if (threadId) continue;
+
+      if (rec.entry?.groupId != null) return String(rec.entry.groupId);
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+function resolveThreadPathContext(
+  cfg: any,
+  agentId: string,
+  entry: SessionEntry,
+  sessionKey?: string,
+): { parentGroupId: string; threadGroupId: string } | null {
+  const channelIdFromKey = parseDiscordChannelIdFromSessionKey(sessionKey ?? "");
+  if (!channelIdFromKey) return null;
+
+  const originThreadId = (entry as any)?.origin?.threadId;
+  const deliveryThreadId = (entry as any)?.deliveryContext?.threadId;
+  const lastThreadId = (entry as any)?.lastThreadId;
+
+  // Required policy: origin.threadId is primary discriminator.
+  const threadId =
+    originThreadId != null
+      ? String(originThreadId)
+      : deliveryThreadId != null
+        ? String(deliveryThreadId)
+        : lastThreadId != null
+          ? String(lastThreadId)
+          : null;
+
+  if (!threadId || threadId !== channelIdFromKey) return null;
+
+  const parentGroupId = resolveParentGroupIdFromThreadEntry(cfg, agentId, entry);
+  if (!parentGroupId) return null;
+
+  return { parentGroupId, threadGroupId: channelIdFromKey };
 }
 
 function recordSessionToMemory(
@@ -989,12 +1290,14 @@ function recordSessionToMemory(
     groupId?: string | number;
     channel?: string;
     sessionKey?: string;
-  }
+    currentSessionEntry?: SessionEntry;
+    pluginConfig?: ArchivePluginConfig;
+  },
 ): { ok: boolean; messageCount?: number; sessionLogFile?: string; longTermFile?: string } {
   const hydrated = ensureSessionFile(entry, cfg, agentId);
   const sessionFile = hydrated.sessionFile;
   if (!sessionFile) {
-    api.logger.debug(`[session-memory-hook] No session file path (${eventLabel}), skipping`);
+    api.logger.debug(`[memory-session-archive] No session file path (${eventLabel}), skipping`);
     return { ok: false };
   }
 
@@ -1003,9 +1306,13 @@ function recordSessionToMemory(
   if (messages.length < minMessages) {
     // If the session file is missing or unreadable, this will be 0; surface a more helpful clue.
     if (!fs.existsSync(sessionFile)) {
-      api.logger.warn(`[session-memory-hook] Missing session transcript file (${eventLabel}): ${sessionFile}`);
+      api.logger.warn(
+        `[memory-session-archive] Missing session transcript file (${eventLabel}): ${sessionFile}`,
+      );
     } else {
-      api.logger.debug(`[session-memory-hook] Only ${messages.length} messages (min: ${minMessages}) for ${eventLabel}, skipping`);
+      api.logger.debug(
+        `[memory-session-archive] Only ${messages.length} messages (min: ${minMessages}) for ${eventLabel}, skipping`,
+      );
     }
     return { ok: false };
   }
@@ -1013,14 +1320,33 @@ function recordSessionToMemory(
   const now = new Date();
   const effectiveGroupId = hydrated.groupId ?? opts?.groupId;
   const source: "dm" | "group" = effectiveGroupId != null ? "group" : "dm";
-  const chatId = resolveChatId({ ...hydrated, groupId: effectiveGroupId } as SessionEntry, opts?.chatId);
+  const chatId = resolveChatId(
+    { ...hydrated, groupId: effectiveGroupId } as SessionEntry,
+    opts?.chatId,
+  );
   const sessionStart = getSessionStartDate(hydrated, transcript);
 
   const workspaceDir = resolveWorkspaceDir(cfg, agentId);
   const resolvedChannel =
-    opts?.channel ??
-    hydrated.channel ??
-    parseChannelFromSessionKey(opts?.sessionKey ?? "");
+    opts?.channel ?? hydrated.channel ?? parseChannelFromSessionKey(opts?.sessionKey ?? "");
+
+  let threadPathContext: { parentGroupId: string; threadGroupId: string } | null = null;
+  if (source === "group" && resolvedChannel === "discord") {
+    // Use currentSessionEntry (has routing meta like origin.threadId) over candidate entry
+    const routingEntry = opts?.currentSessionEntry
+      ? { ...opts.currentSessionEntry, groupId: opts.currentSessionEntry.groupId ?? effectiveGroupId } as SessionEntry
+      : { ...hydrated, groupId: effectiveGroupId } as SessionEntry;
+    const originTid = (routingEntry as any)?.origin?.threadId;
+    const deliveryTid = (routingEntry as any)?.deliveryContext?.threadId;
+    const lastTid = (routingEntry as any)?.lastThreadId;
+    api.logger.debug(
+      `[memory-session-archive] threadPathContext probe: sessionKey=${opts?.sessionKey} originTid=${originTid} deliveryTid=${deliveryTid} lastTid=${lastTid}`,
+    );
+    threadPathContext = resolveThreadPathContext(cfg, agentId, routingEntry, opts?.sessionKey);
+    api.logger.debug(
+      `[memory-session-archive] threadPathContext result: ${threadPathContext ? JSON.stringify(threadPathContext) : "null"}`,
+    );
+  }
 
   const targets = resolveTargets({
     workspaceDir,
@@ -1028,55 +1354,122 @@ function recordSessionToMemory(
     groupId: effectiveGroupId != null ? String(effectiveGroupId) : undefined,
     sessionStart,
     writeLongTerm: opts?.writeLongTerm === true,
-    channel: resolvedChannel
+    channel: resolvedChannel,
+    threadPath: threadPathContext ?? undefined,
   });
 
   const sessionId = hydrated.sessionId ?? "unknown";
 
-  const content = buildStandardEntry({
-    now,
-    agentId,
-    sessionId,
-    source,
-    chatId,
-    messages
-  });
+  const dwConfig = opts?.pluginConfig?.documentWriter;
+  const dwEnabled = dwConfig?.enabled !== false;
+  const dwAgent = typeof dwConfig?.agent === "string" ? dwConfig.agent : "memory-writer";
+  const dwModel = typeof dwConfig?.model === "string" ? dwConfig.model : "letsur/gemini-3-flash-preview";
+  const dwDirRaw = typeof dwConfig?.dir === "string" ? dwConfig.dir : api.runtime.state.resolveStateDir();
+  const dwDir = dwDirRaw.startsWith("~") ? path.join(os.homedir(), dwDirRaw.slice(1)) : dwDirRaw;
 
-  appendToFile(targets.sessionLogFile, content);
-  if (targets.longTermFile) appendToFile(targets.longTermFile, content);
+  if (dwEnabled) {
+    ensureDir(path.dirname(targets.sessionLogFile));
 
-  // Fire-and-forget: generate .vec sidecar for the session log
-  generateVecSidecar(targets.sessionLogFile, api.logger, cfg).catch(() => {});
+    const transcriptPath = writeCleanTranscript(messages, targets.sessionLogFile);
 
-  api.logger.info(
-    `[session-memory-hook] Recorded ${messages.length} messages event=${eventLabel} sessionLog=${targets.sessionLogFile}${targets.longTermFile ? ` long=${targets.longTermFile}` : ""}`
-  );
+    spawnDocumentWriter(
+      transcriptPath,
+      targets.sessionLogFile,
+      { agent: dwAgent, model: dwModel },
+      dwDir,
+      api.logger,
+      cfg,
+    );
+
+    api.logger.info(
+      `[memory-session-archive] Dispatched memory-writer for ${messages.length} messages event=${eventLabel} target=${targets.sessionLogFile}`,
+    );
+  } else {
+    const content = buildStandardEntry({
+      now,
+      agentId,
+      sessionId,
+      source,
+      chatId,
+      messages,
+    });
+
+    appendToFile(targets.sessionLogFile, content);
+    if (targets.longTermFile) appendToFile(targets.longTermFile, content);
+
+    generateVecSidecar(targets.sessionLogFile, api.logger, cfg).catch(() => {});
+
+    api.logger.info(
+      `[memory-session-archive] Recorded ${messages.length} messages event=${eventLabel} sessionLog=${targets.sessionLogFile}${targets.longTermFile ? ` long=${targets.longTermFile}` : ""}`,
+    );
+  }
 
   return {
     ok: true,
     messageCount: messages.length,
     sessionLogFile: targets.sessionLogFile,
-    longTermFile: targets.longTermFile
+    longTermFile: targets.longTermFile,
   };
 }
 
+interface ArchivePluginConfig {
+  enabled?: boolean;
+  maxMessages?: number;
+  minMessages?: number;
+  documentWriter?: {
+    enabled?: boolean;
+    agent?: string;
+    model?: string;
+    dir?: string;
+  };
+}
+
+function loadArchiveConfig(stateDir: string, logger: PluginApi["logger"]): ArchivePluginConfig {
+  try {
+    const cfgPath = path.join(stateDir, "extensions", "memory-session-archive", "config.json");
+    if (fs.existsSync(cfgPath)) {
+      const raw = fs.readFileSync(cfgPath, "utf-8");
+      return JSON.parse(raw) as ArchivePluginConfig;
+    }
+  } catch (err) {
+    logger.warn(
+      `[memory-session-archive] Failed to load config.json: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  return {};
+}
+
 export function register(api: PluginApi): void {
-  const pluginConfig = api.pluginConfig ?? {};
-  if (pluginConfig.enabled === false) {
-    api.logger.info("[session-memory-hook] Disabled via config");
+  const baseConfig = api.pluginConfig ?? {};
+  if (baseConfig.enabled === false) {
+    api.logger.info("[memory-session-archive] Disabled via config");
     return;
   }
 
-  // 0 means no limit
+  const fileConfig = loadArchiveConfig(api.runtime.state.resolveStateDir(), api.logger);
+  const pluginConfig: ArchivePluginConfig = { ...fileConfig, ...baseConfig };
+
+  try {
+    const tmpDir = os.tmpdir();
+    const staleFiles = fs.readdirSync(tmpDir).filter(
+      (f) => f.startsWith("memory-writer-") && f.endsWith(".transcript.tmp"),
+    );
+    for (const f of staleFiles) {
+      fs.unlinkSync(path.join(tmpDir, f));
+    }
+    if (staleFiles.length > 0) {
+      api.logger.info(`[memory-session-archive] Cleaned ${staleFiles.length} stale transcript tmp file(s)`);
+    }
+  } catch {}
+
   const maxMessages = pluginConfig.maxMessages ?? 0;
-  // Default to 1 so a just-started session (assistant greeting only) still gets logged.
   const minMessages = pluginConfig.minMessages ?? 1;
 
   const handleNewReset = async (event: HookEvent) => {
     const cfg = api.runtime.config.loadConfig();
     const agentId = parseAgentId(event.sessionKey);
     if (!agentId) {
-      api.logger.warn("[session-memory-hook] Could not determine agent ID from session key");
+      api.logger.warn("[memory-session-archive] Could not determine agent ID from session key");
       return;
     }
 
@@ -1087,7 +1480,7 @@ export function register(api: PluginApi): void {
       currentSessionId,
       event.sessionKey,
       event.context.sessionEntry,
-      event.context.senderId
+      event.context.senderId,
     );
 
     const candidates: SessionEntry[] = [];
@@ -1108,7 +1501,10 @@ export function register(api: PluginApi): void {
 
     const desiredScope = desiredGroupId
       ? ({ type: "group", groupId: desiredGroupId } as const)
-      : ({ type: "dm", chatId: resolveChatId(event.context.sessionEntry ?? ({} as any), event.context.senderId) } as const);
+      : ({
+          type: "dm",
+          chatId: resolveChatId(event.context.sessionEntry ?? ({} as any), event.context.senderId),
+        } as const);
 
     enqueue(event.context.previousSessionEntry);
     enqueue(resolveResetVariantForSessionEntry(cfg, agentId, event.context.previousSessionEntry));
@@ -1117,15 +1513,21 @@ export function register(api: PluginApi): void {
 
     // Robust fallback: if the core /new flow produced a fresh reset transcript file but we don't have
     // a good previousSessionEntry reference, pick the nearest *.jsonl.reset.* by timestamp.
-    enqueue(findResetTranscriptNear(cfg, agentId, event.timestamp, { excludeSessionId: String(currentSessionId ?? "") }));
+    enqueue(
+      findResetTranscriptNear(cfg, agentId, event.timestamp, {
+        excludeSessionId: String(currentSessionId ?? ""),
+      }),
+    );
 
     if (candidates.length === 0) {
-      api.logger.debug("[session-memory-hook] No previous session candidate (and fallback miss), skipping");
+      api.logger.debug(
+        "[memory-session-archive] No previous session candidate (and fallback miss), skipping",
+      );
       return;
     }
 
     api.logger.info(
-      `[session-memory-hook] Handle ${event.action}: sessionKey=${event.sessionKey} desired=${desiredScope.type}:${desiredScope.type === "group" ? (desiredScope as any).groupId : (desiredScope as any).chatId} candidates=${candidates.length}`
+      `[memory-session-archive] Handle ${event.action}: sessionKey=${event.sessionKey} desired=${desiredScope.type}:${desiredScope.type === "group" ? (desiredScope as any).groupId : (desiredScope as any).chatId} candidates=${candidates.length}`,
     );
 
     // Prefer candidates that match the current chat scope to avoid DM/group cross-contamination.
@@ -1161,7 +1563,7 @@ export function register(api: PluginApi): void {
 
     if (scoped.length === 0) {
       api.logger.warn(
-        `[session-memory-hook] No scope-matching previous session on ${event.action}: sessionKey=${event.sessionKey} desired=${desiredScope.type}`
+        `[memory-session-archive] No scope-matching previous session on ${event.action}: sessionKey=${event.sessionKey} desired=${desiredScope.type}`,
       );
       return;
     }
@@ -1169,7 +1571,12 @@ export function register(api: PluginApi): void {
     const groupIdHint = desiredScope.type === "group" ? desiredScope.groupId : undefined;
     const chatIdHint = desiredScope.type === "group" ? desiredScope.groupId : desiredScope.chatId;
 
-    let result: { ok: boolean; messageCount?: number; sessionLogFile?: string; longTermFile?: string } = { ok: false };
+    let result: {
+      ok: boolean;
+      messageCount?: number;
+      sessionLogFile?: string;
+      longTermFile?: string;
+    } = { ok: false };
     for (const candidate of scoped) {
       const desiredChannel =
         event.context.commandSource === "discord"
@@ -1191,21 +1598,27 @@ export function register(api: PluginApi): void {
           chatId: chatIdHint,
           groupId: groupIdHint,
           channel: desiredChannel,
-          sessionKey: event.sessionKey
-        }
+          sessionKey: event.sessionKey,
+          currentSessionEntry: event.context.sessionEntry,
+          pluginConfig,
+        },
       );
       if (result.ok) break;
     }
 
     if (!result.ok) {
       api.logger.warn(
-        `[session-memory-hook] No recordable previous session on ${event.action}: sessionKey=${event.sessionKey} candidates=${candidates.length}`
+        `[memory-session-archive] No recordable previous session on ${event.action}: sessionKey=${event.sessionKey} candidates=${candidates.length}`,
       );
       return;
     }
 
     if ((result.messageCount ?? 0) > 0) {
-      event.messages.push(`📝 Session log saved (${result.messageCount} messages).`);
+      const dwEnabled = pluginConfig.documentWriter?.enabled !== false;
+      const msg = dwEnabled
+        ? `📝 Session archival started (${result.messageCount} messages).`
+        : `📝 Session log saved (${result.messageCount} messages).`;
+      event.messages.push(msg);
     }
   };
 
@@ -1216,34 +1629,46 @@ export function register(api: PluginApi): void {
     await handleNewReset(event);
   };
 
-  api.registerHook(["command:new", "command:reset"], async (event: HookEvent) => {
-    try {
-      await runOnce(event);
-    } catch (err) {
-      api.logger.error(`[session-memory-hook] Error on ${event.action}: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }, {
-    // IMPORTANT: avoid colliding with OpenClaw's bundled internal hook id "session-memory".
-    // If the bundled hook is disabled via config (hooks.internal.entries.session-memory.enabled=false),
-    // a name collision can inadvertently disable this plugin hook too.
-    name: "session-memory-hook:new-reset",
-    description: "Records previous session conversation to memory on /new or /reset"
-  });
+  api.registerHook(
+    ["command:new", "command:reset"],
+    async (event: HookEvent) => {
+      try {
+        await runOnce(event);
+      } catch (err) {
+        api.logger.error(
+          `[memory-session-archive] Error on ${event.action}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    },
+    {
+      // IMPORTANT: avoid colliding with OpenClaw's bundled internal hook id "session-memory".
+      // If the bundled hook is disabled via config (hooks.internal.entries.session-memory.enabled=false),
+      // a name collision can inadvertently disable this plugin hook too.
+      name: "memory-session-archive:new-reset",
+      description: "Records previous session conversation to memory on /new or /reset",
+    },
+  );
 
   // Compatibility hook: some command sources emit only generic `command` events (action=new/reset).
-  api.registerHook("command", async (event: HookEvent) => {
-    try {
-      const action = (event.action || "").toLowerCase();
-      if (action === "new" || action === "reset") {
-        await runOnce(event);
+  api.registerHook(
+    "command",
+    async (event: HookEvent) => {
+      try {
+        const action = (event.action || "").toLowerCase();
+        if (action === "new" || action === "reset") {
+          await runOnce(event);
+        }
+      } catch (err) {
+        api.logger.error(
+          `[memory-session-archive] Error on generic command hook: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
-    } catch (err) {
-      api.logger.error(`[session-memory-hook] Error on generic command hook: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }, {
-    name: "session-memory-command-compat",
-    description: "Compatibility: placeholder for future generic command handling"
-  });
+    },
+    {
+      name: "session-memory-command-compat",
+      description: "Compatibility: placeholder for future generic command handling",
+    },
+  );
 
   // Bridge: expose handlers on globalThis so Patch E can call them directly
   // (workaround for handlers$1 module-scope isolation between loader and extensionAPI)
@@ -1260,5 +1685,7 @@ export function register(api: PluginApi): void {
   // No generic "command" bridge — specific hooks above handle all cases.
   (globalThis as any).__openclawPluginHooks = bridge;
 
-  api.logger.info("[session-memory-hook] Registered command:new/reset + command(compat) hook (standardized paths)");
+  api.logger.info(
+    "[memory-session-archive] Registered command:new/reset + command(compat) hook (standardized paths)",
+  );
 }

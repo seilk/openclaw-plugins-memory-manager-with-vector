@@ -1,5 +1,5 @@
 {
-  "id": "memory-auto-recall-local",
+  "id": "memory-context-injector",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -46,6 +46,20 @@
         "type": "string",
         "default": "letsur",
         "description": "Provider name from openclaw.json models.providers to use for embeddings"
+      },
+      "minEmbeddingScore": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1,
+        "default": 0.7,
+        "description": "Minimum cosine similarity score for embedding-based search"
+      },
+      "minKeywordScore": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1,
+        "default": 0.5,
+        "description": "Minimum score for keyword fallback search"
       }
     }
   }

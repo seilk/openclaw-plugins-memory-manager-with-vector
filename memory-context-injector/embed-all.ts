@@ -2,14 +2,14 @@
 /**
  * embed-all.ts
  *
- * Batch embedding script for memory-auto-recall-local.
+ * Batch embedding script for memory-context-injector.
  * Scans all workspace agent memory directories and creates .vec sidecar files
  * for any .md files that don't yet have one (or where .md is newer than .vec).
  *
  * Usage:
  *   npx tsx embed-all.ts
  *
- * Run from the extensions/memory-auto-recall-local/ directory (or anywhere,
+ * Run from the extensions/memory-context-injector/ directory (or anywhere,
  * it always reads config from ~/.openclaw.discord/openclaw.json).
  */
 
@@ -21,26 +21,21 @@ import * as os from "node:os";
 // Config
 // ---------------------------------------------------------------------------
 
-const OPENCLAW_CONFIG_PATH = path.join(
-  os.homedir(),
-  ".openclaw.discord",
-  "openclaw.json",
-);
+const OPENCLAW_CONFIG_PATH = path.join(os.homedir(), ".openclaw.discord", "openclaw.json");
 
 const EMBEDDING_MODEL = "text-embedding-3-small";
 const EMBEDDING_PROVIDER = "letsur";
-const MAX_BATCH_SIZE = 20;       // texts per API call
+const MAX_BATCH_SIZE = 20; // texts per API call
 const RATE_LIMIT_DELAY_MS = 200; // delay between API calls
-const MAX_BLOCK_CHARS = 6000;    // sub-split blocks exceeding this (~2K tokens safety margin under 8191)
+const MAX_BLOCK_CHARS = 6000; // sub-split blocks exceeding this (~2K tokens safety margin under 8191)
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 interface VecBlock {
-  text: string;       // first 200 chars for display
-  embedding: number[]; // 1536 floats
-  fullText: string;   // complete block text
+  fullText: string;
+  embedding: number[];
 }
 
 interface VecFile {
@@ -117,14 +112,27 @@ function subSplitBlock(text: string, maxChars: number): string[] {
     remaining = remaining.slice(splitIdx).trim();
   }
 
-  return chunks.filter(c => c.length > 20);
+  return chunks.filter((c) => c.length > 20);
 }
 
 function splitIntoBlocks(filePath: string): Array<{ text: string }> {
   const raw = fs.readFileSync(filePath, "utf-8");
-  const rawBlocks = raw.split(/\n(?=---\n|## )/).filter(b => b.trim().length > 20);
 
-  // Sub-split any block that exceeds the API token limit
+  const blockTagMatches = raw.match(/<block[^>]*>([\s\S]*?)<\/block>/g);
+  let rawBlocks: string[];
+
+  if (blockTagMatches && blockTagMatches.length > 0) {
+    rawBlocks = blockTagMatches
+      .map((b) => {
+        const titleMatch = b.match(/<block\s+title="([^"]*)">/);
+        const body = b.replace(/<\/?block[^>]*>/g, "").trim();
+        return titleMatch ? `${titleMatch[1]}: ${body}` : body;
+      })
+      .filter((b) => b.length > 20);
+  } else {
+    rawBlocks = raw.split(/\n(?=---\n|## )/).filter((b) => b.trim().length > 20);
+  }
+
   const result: Array<{ text: string }> = [];
   for (const block of rawBlocks) {
     const trimmed = block.trim();
@@ -151,7 +159,7 @@ async function embedBatch(
     const response = await fetch(`${baseUrl}/embeddings`, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ model, input: texts }),
@@ -163,11 +171,11 @@ async function embedBatch(
       return null;
     }
 
-    const json = await response.json() as EmbeddingResponse;
+    const json = (await response.json()) as EmbeddingResponse;
 
     // Sort by index to match input order
     const sorted = [...json.data].sort((a, b) => a.index - b.index);
-    return sorted.map(d => d.embedding);
+    return sorted.map((d) => d.embedding);
   } catch (err) {
     console.error(`  Fetch error: ${err instanceof Error ? err.message : String(err)}`);
     return null;
@@ -192,15 +200,23 @@ function findMdFiles(workspacesDir: string): string[] {
     if (!fs.existsSync(memoryBase)) continue;
 
     // Scan dm/ and dc_*/ subdirectories
-    const scopeDirs = fs.readdirSync(memoryBase, { withFileTypes: true })
-      .filter(d => d.isDirectory() && (d.name === "dm" || d.name.startsWith("dc_")))
-      .map(d => path.join(memoryBase, d.name));
+    const scopeDirs = fs
+      .readdirSync(memoryBase, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && (d.name === "dm" || d.name.startsWith("dc_")))
+      .map((d) => path.join(memoryBase, d.name));
 
     for (const scopeDir of scopeDirs) {
-      const files = fs.readdirSync(scopeDir)
-        .filter(f => f.endsWith(".md") && !f.startsWith("."))
-        .map(f => path.join(scopeDir, f));
-      results.push(...files);
+      // Flat scan only — no recursion into subdirectories (matches runtime index.ts behavior)
+      try {
+        const entries = fs.readdirSync(scopeDir, { withFileTypes: true });
+        for (const e of entries) {
+          if (e.isFile() && e.name.endsWith(".md") && !e.name.startsWith(".")) {
+            results.push(path.join(scopeDir, e.name));
+          }
+        }
+      } catch {
+        // skip unreadable directories
+      }
     }
   }
 
@@ -223,7 +239,7 @@ function needsEmbedding(mdPath: string): boolean {
 // ---------------------------------------------------------------------------
 
 function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // ---------------------------------------------------------------------------
@@ -231,7 +247,19 @@ function sleep(ms: number): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  console.log("=== memory-auto-recall-local: embed-all ===\n");
+  console.log("=== memory-context-injector: embed-all ===\n");
+
+  const limitArg = process.argv.find((a) => a.startsWith("--limit"));
+  const limitVal = limitArg?.includes("=")
+    ? parseInt(limitArg.split("=")[1], 10)
+    : limitArg
+      ? parseInt(process.argv[process.argv.indexOf(limitArg) + 1], 10)
+      : undefined;
+  const limit = limitVal && !isNaN(limitVal) ? limitVal : undefined;
+
+  if (limit) {
+    console.log(`*** TEST MODE: limiting to ${limit} files ***\n`);
+  }
 
   // Load config
   let ocConfig: Record<string, unknown>;
@@ -259,9 +287,12 @@ async function main(): Promise<void> {
   const workspacesRoot = path.dirname(OPENCLAW_CONFIG_PATH);
 
   const allMdFiles = findMdFiles(workspacesRoot);
-  const toEmbed = allMdFiles.filter(needsEmbedding);
+  const allToEmbed = allMdFiles.filter(needsEmbedding);
+  const toEmbed = limit ? allToEmbed.slice(0, limit) : allToEmbed;
 
-  console.log(`Found ${allMdFiles.length} .md files, ${toEmbed.length} need embedding\n`);
+  console.log(`Found ${allMdFiles.length} .md files, ${allToEmbed.length} need embedding`);
+  if (limit) console.log(`Limiting to first ${toEmbed.length} files`);
+  console.log();
 
   if (toEmbed.length === 0) {
     console.log("All files already embedded. Done.");
@@ -296,7 +327,7 @@ async function main(): Promise<void> {
 
     // Embed in batches of MAX_BATCH_SIZE
     const allEmbeddings: number[][] = [];
-    const texts = blocks.map(b => b.text);
+    const texts = blocks.map((b) => b.text);
     let batchFailed = false;
 
     for (let i = 0; i < texts.length; i += MAX_BATCH_SIZE) {
@@ -332,18 +363,18 @@ async function main(): Promise<void> {
     const vecData: VecFile = {
       model: EMBEDDING_MODEL,
       blocks: blocks.map((block, idx) => ({
-        text: block.text.slice(0, 200),
-        embedding: allEmbeddings[idx],
         fullText: block.text,
+        embedding: allEmbeddings[idx],
       })),
     };
 
-    // Write .vec sidecar
     const vecPath = mdPath.replace(/\.md$/, ".vec");
     try {
-      fs.writeFileSync(vecPath, JSON.stringify(vecData), "utf-8");
+      fs.writeFileSync(vecPath, JSON.stringify(vecData, null, 2), "utf-8");
     } catch (err) {
-      console.error(`  Failed to write ${vecPath}: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(
+        `  Failed to write ${vecPath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
       failed++;
       continue;
     }
@@ -364,7 +395,7 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(err => {
+main().catch((err) => {
   console.error("Fatal error:", err);
   process.exit(1);
 });

@@ -1,5 +1,5 @@
 {
-  "name": "session-memory-hook",
+  "name": "memory-session-archive",
   "version": "1.0.0",
   "type": "module"
 }

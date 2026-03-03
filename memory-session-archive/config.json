@@ -1,0 +1,10 @@
+{
+  "documentWriter": {
+    "enabled": true,
+    "agent": "memory-writer",
+    "model": "letsur/gemini-3-flash-preview",
+    "dir": "~/.openclaw.discord/.memory-writer"
+  },
+  "minMessages": 3,
+  "maxMessages": 0
+}
