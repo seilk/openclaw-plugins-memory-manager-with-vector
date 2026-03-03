@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "maxResults": 3,
+  "minEmbeddingScore": 0.6,
+  "minKeywordScore": 0.5,
+  "minPromptLength": 10,
+  "maxCharsPerSnippet": 600,
+  "maxTotalChars": 2500,
+  "embeddingModel": "text-embedding-3-small",
+  "embeddingProvider": "openai"
+}

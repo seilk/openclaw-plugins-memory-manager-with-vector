@@ -51,7 +51,7 @@
         "type": "number",
         "minimum": 0,
         "maximum": 1,
-        "default": 0.7,
+        "default": 0.6,
         "description": "Minimum cosine similarity score for embedding-based search"
       },
       "minKeywordScore": {

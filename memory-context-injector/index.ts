@@ -105,7 +105,7 @@ const DEFAULTS: PluginConfig = {
   enabled: true,
   maxResults: 3,
   minScore: 0.15,
-  minEmbeddingScore: 0.7,
+  minEmbeddingScore: 0.6,
   minKeywordScore: 0.5,
   minPromptLength: 10,
   maxCharsPerSnippet: 600,
@@ -981,8 +981,21 @@ function formatMemoriesBlock(results: ScoredBlock[], cfg: PluginConfig): string 
 // Plugin entry
 // ---------------------------------------------------------------------------
 
+function loadConfigFile(): Record<string, unknown> | null {
+  try {
+    const configPath = path.join(path.dirname(new URL(import.meta.url).pathname), "config.json");
+    if (fs.existsSync(configPath)) {
+      return JSON.parse(fs.readFileSync(configPath, "utf-8")) as Record<string, unknown>;
+    }
+  } catch {
+    // fall through
+  }
+  return null;
+}
+
 export function register(api: PluginApi): void {
-  const cfg = parseConfig(api.pluginConfig);
+  const fileConfig = loadConfigFile();
+  const cfg = parseConfig(fileConfig ?? api.pluginConfig);
 
   if (!cfg.enabled) {
     api.logger.info("[memory-context-injector] Disabled via config");
