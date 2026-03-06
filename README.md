@@ -1,6 +1,6 @@
 # openclaw-plugins-memory-manager-with-vector
 
-Vector search-based memory system for [OpenClaw](https://openclaw.ai) agents. Two plugins + an AI-powered memory writer give agents persistent, semantically searchable long-term memory with per-topic clustering.
+Vector search-based memory system for [OpenClaw](https://openclaw.ai) agents. Includes automatic session archiving + recall, plus a manual `/remem` memory saver and companion skill for high-fidelity user-directed memory capture.
 
 ## Architecture
 
@@ -13,6 +13,12 @@ WRITE PATH (session end):
     -> spawn: opencode run --file *.tmp --agent memory-writer
     -> memory-writer clusters by theme, writes <block title="...">content</block> .md
     -> on close: cleanup tmp -> generateVecSidecar() -> .vec sidecar
+
+MANUAL WRITE PATH:
+  user says "remember this" / agent uses memory-manual-embed skill
+    -> skill formats title + content
+    -> /remem plugin command saves markdown memory file
+    -> /remem generates matching .vec sidecar immediately
 
 READ PATH (every message):
   before_prompt_build hook
@@ -63,10 +69,23 @@ npx tsx backfill.ts --verify        # Check all files have <block> tags
 npx tsx backfill.ts --cleanup       # Delete .bak backup files
 ```
 
+### remem (Manual Write Path)
+
+Registers a `/remem` command that saves a user-directed memory as a markdown file and generates a `.vec` sidecar immediately.
+
+- **Input**: JSON or frontmatter-like payload with only `title` and `content`
+- **Scope-aware storage**: writes to `memory/dm/` for DMs, `memory/dc_{channelId}/` for channels/threads
+- **Embeddings**: uses the configured embedding provider/model at save time
+- **Intended pair**: works with the `skills/memory-manual-embed` skill so the agent can recognize natural-language memory-save requests and call `/remem`
+
 ### Agent Prompts
 
 - `agents/memory-writer.md` — Prompt for the hook pipeline (Write tool only, no Read)
 - `agents/memory-writer-backfill.md` — Prompt for backfilling old markdown formats
+
+## Skill
+
+- `skills/memory-manual-embed/SKILL.md` — AgentSkill that tells the agent when and how to save user-requested memories via `/remem`
 
 ## .vec Sidecar Format
 
@@ -88,30 +107,38 @@ Block titles are preserved in `fullText` (prepended as `Title: body`) for better
 
 ## Installation
 
-1. Copy both plugin directories into your OpenClaw `extensions/` folder:
+1. Copy plugin directories into your OpenClaw `extensions/` folder:
 
 ```bash
 cp -r memory-context-injector  ~/.openclaw/extensions/
 cp -r memory-session-archive   ~/.openclaw/extensions/
+cp -r remem                    ~/.openclaw/extensions/
 ```
 
-2. Copy agent prompts:
+2. Copy the manual-memory skill into your skills directory:
+
+```bash
+mkdir -p ~/.openclaw/skills/memory-manual-embed
+cp skills/memory-manual-embed/SKILL.md ~/.openclaw/skills/memory-manual-embed/
+```
+
+3. Copy agent prompts:
 
 ```bash
 cp agents/memory-writer.md agents/memory-writer-backfill.md ~/.opencode/agents/
 ```
 
-3. Add plugins to `openclaw.json`:
+4. Add plugins to `openclaw.json`:
 
 ```json
 {
   "plugins": {
-    "allow": ["memory-context-injector", "memory-session-archive"]
+    "allow": ["memory-context-injector", "memory-session-archive", "remem"]
   }
 }
 ```
 
-4. Configure an embedding provider in `openclaw.json`:
+5. Configure an embedding provider in `openclaw.json`:
 
 ```json
 {
@@ -126,7 +153,7 @@ cp agents/memory-writer.md agents/memory-writer-backfill.md ~/.opencode/agents/
 }
 ```
 
-5. Configure the memory-writer in `memory-session-archive/config.json`:
+6. Configure the memory-writer in `memory-session-archive/config.json`:
 
 ```json
 {
@@ -139,14 +166,14 @@ cp agents/memory-writer.md agents/memory-writer-backfill.md ~/.opencode/agents/
 }
 ```
 
-6. Create a clean workspace directory for the memory-writer (avoids AGENTS.md injection):
+7. Create a clean workspace directory for the memory-writer (avoids AGENTS.md injection):
 
 ```bash
 mkdir -p ~/.openclaw/.memory-writer/.opencode/agents
 ln -s ~/.opencode/agents/memory-writer.md ~/.openclaw/.memory-writer/.opencode/agents/
 ```
 
-7. (Optional) Batch-embed existing memory files:
+8. (Optional) Batch-embed existing memory files:
 
 ```bash
 cd memory-context-injector
